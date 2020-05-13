@@ -31,6 +31,11 @@ struct board {
 	// [rank][file]
 	struct square squares[8][8];
 
+	int white_king_rank;
+	int white_king_file;
+	int black_king_rank;
+	int black_king_file;
+
 	bool is_white_in_check;
 	bool is_black_in_check;
 
@@ -42,37 +47,36 @@ struct board {
 	int result;
 
 	bool can_en_passant[8]; // per file, regardless of color
+
+	int n_moves_made; // number of white moves + number of black moves
+	struct move *move_history;
 };
-
-
-#define IS_NOT_CASTLE 0
-#define KINGSIDE_CASTLE 1
-#define QUEENSIDE_CASTLE 2
 
 struct move {
 	piece_type piece_type;
 	piece_color piece_color;
 	int source_rank, source_file;
 	int target_rank, target_file;
-	int castle_type;
 	bool is_capture;
 	piece_type captured_piece_type;    // only applies if is_capture == true
 	bool is_check;
 	bool is_mate; 
-	bool is_promotion;		   		   // only applies if piece_type == PIECE_TYPE_PAWN
-	bool is_en_passant;
-	piece_type piece_type_promoted_to; // only applies if piece_type == PIECE_TYPE_PAWN
+
+	// following fields only apply if piece_type == PIECE_TYPE_PAWN
+	bool is_promotion;		   		   
+	bool is_en_passant; 
+	piece_type piece_type_promoted_to;
 };
 
 // there up to 8 knight moves for a single knight
 // each pair of values here are a potential knight move
-static int knight_move_rank_offsets[8] = { 2, 1, -1, -2, -2, -1, 1, 2 };
-static int knight_move_file_offsets[8] = { 1, 2, 2, 1, -1, -2, -2, -1 };
+static int knight_move_rank_offsets[8] = { 2, 1, -1, -2, -2, -1,  1,  2 };
+static int knight_move_file_offsets[8] = { 1, 2,  2,  1, -1, -2, -2, -1 };
 
 
 // a king can move in 8 directions, rank_offsets[i] and file_offsets[i] are one directional pair
-static int king_move_rank_offsets[8] = { -1, -1, -1, 0, 1, 1, 1, 0 };
-static int king_move_file_offsets[8] = { 1, 0, -1, -1, -1, 0, 1, 1 };
+static int king_move_rank_offsets[8] = { -1, -1, -1,  0,  1, 1, 1, 0 };
+static int king_move_file_offsets[8] = {  1,  0, -1, -1, -1, 0, 1, 1 };
 
 
 #define MOVE_IS_NOT_CHECK_OR_MATE 0
@@ -96,8 +100,9 @@ char *write_move_target_in_algebraic_notation_to_buf(struct move *move, char *to
 	return to_write_to;
 }
 
-static char move_str_buf[32];
+
 char *move_str(struct move *move) {
+	static char move_str_buf[32];
 	char *to_write_to = move_str_buf;
 
 	switch (move->piece_type) {
@@ -130,6 +135,10 @@ char *move_str(struct move *move) {
 					case PIECE_TYPE_ROOK:
 						*to_write_to = 'R';
 						break;
+
+					default:
+						fprintf(stderr, "move->piece_type_promoted_to is %d, which is invalid\n", move->piece_type_promoted_to);
+						exit(1);
 				}
 				to_write_to++;
 			}
@@ -166,8 +175,22 @@ char *move_str(struct move *move) {
 		break;
 
 		case PIECE_TYPE_KING: {
-			*to_write_to = 'K'; to_write_to++;
-			to_write_to = write_move_target_in_algebraic_notation_to_buf(move, to_write_to);
+			if (move->source_file - move->target_file == -2) { // kingside castle, source file is always 4, target is 6
+				assert(move->source_file == 4);
+				assert(move->target_file == 6);
+
+				strcpy(to_write_to, "O-O");
+				to_write_to += 3;
+			} else if (move->source_file - move->target_file == 2) { // queenside castle, source file is always 4, target is 2
+				assert(move->source_file == 4);
+				assert(move->target_file == 2);
+
+				strcpy(to_write_to, "O-O-O");
+				to_write_to += 5;
+			} else {
+				*to_write_to = 'K'; to_write_to++;
+				to_write_to = write_move_target_in_algebraic_notation_to_buf(move, to_write_to);
+			}
 		};
 		break;
 
@@ -188,8 +211,9 @@ char *move_str(struct move *move) {
 }
 
 
-static char board_str_buf[512];
+
 char *board_str(const struct board *board) {
+	static char board_str_buf[512];
 	char *to_write_to = board_str_buf;
 
 	for (int rank = 7; rank >= 0; rank--) {
@@ -245,6 +269,12 @@ char *board_str(const struct board *board) {
 }
 
 void load_fen_to_board(const char *fen, struct board *into) {
+
+	into->white_king_rank = -1;
+	into->white_king_file = -1;
+	into->black_king_rank = -1;
+	into->black_king_file = -1;
+
 	for (int rank = 7; rank >= 0; rank--) {
 		for (int file = 0; file < 8; ) {
 			char ch = *fen;
@@ -258,10 +288,11 @@ void load_fen_to_board(const char *fen, struct board *into) {
 
 				current_square->has_piece = true;
 				
-				switch (ch) {
-				case 'p': case 'n': case 'b': case 'r': case 'q': case 'k':
+				if (ch == 'p' || ch == 'n' || ch == 'b' || ch == 'r' || ch == 'q' || ch == 'k') {
 					current_square->piece_color = PIECE_COLOR_BLACK;
 					ch -= 32;
+				} else {
+					current_square->piece_color = PIECE_COLOR_WHITE;
 				}
 				
 				switch (ch) {
@@ -275,8 +306,17 @@ void load_fen_to_board(const char *fen, struct board *into) {
 				current_square->piece_type = PIECE_TYPE_ROOK; break;
 				case 'Q': 
 				current_square->piece_type = PIECE_TYPE_QUEEN; break;
-				case 'K':
-				current_square->piece_type = PIECE_TYPE_KING; break;
+				case 'K': {
+					current_square->piece_type = PIECE_TYPE_KING; 
+					if (current_square->piece_color == PIECE_COLOR_WHITE) {
+						into->white_king_rank = rank;
+						into->white_king_file = file;
+					} else {
+						into->black_king_rank = rank;
+						into->black_king_file = file;
+					}
+				} 
+				break;
 				default:
 					fprintf(stderr, "found invalid character '%c' in fen\n", ch);
 					exit(1);
@@ -299,8 +339,13 @@ void load_fen_to_board(const char *fen, struct board *into) {
 
 	} // rank loop
 
+	assert(into->white_king_rank != -1);
+	assert(into->white_king_file != -1);
+	assert(into->black_king_rank != -1);
+	assert(into->black_king_file != -1);
+
 	// whose turn is it portion of the fen
-	fen += 3;
+	fen += 2;
 
 	into->white_can_castle_kingside = false;
 	into->black_can_castle_kingside = false;
@@ -339,45 +384,135 @@ int int_difference(int a, int b) {
 }
 
 
+void get_king_position(const struct board *board, piece_color king_color, int *rank, int *file) {
+	if (king_color == PIECE_COLOR_WHITE) {
+		*rank = board->white_king_rank;
+		*file = board->white_king_file;
+	} else {
+		*rank = board->black_king_rank;
+		*file = board->black_king_file;
+	}
+}
+
 static struct board saved_board_states[256];
 static int n_saved_board_states = 0;
 
-// applies move to board without any constraints such as whose move it is, who is in check etc
+
+void modify_squares_for_castled_rook(struct square *source_sq, struct square *target_sq, piece_color rook_color) {
+	source_sq->has_piece = false;
+
+	target_sq->has_piece = true;
+	target_sq->piece_type = PIECE_TYPE_ROOK;
+	target_sq->piece_color = rook_color;
+}
+
+// applies move to board without any constraints, the move should be legal if the state of the board intends to be correct after
 void apply_move_to_board(struct board *board, const struct move *move) {
 	saved_board_states[n_saved_board_states] = *board;
 	n_saved_board_states++;
 
-	memset(board->can_en_passant, 0, 8 * sizeof(board->can_en_passant[0])); 
-
-	if (move->castle_type == KINGSIDE_CASTLE) {
+	// check for whether the move is a castle, since the rook castled with needs to move here
+	// this only moves the rook that is being castled with, the king's move is taken care of by the general piece move code below
+	if (move->piece_type == PIECE_TYPE_KING) {
 		if (move->piece_color == PIECE_COLOR_WHITE) {
-			
-		}
-		
-	} else if (move->castle_type == QUEENSIDE_CASTLE) {
+			board->white_king_rank = move->target_rank;
+			board->white_king_file = move->target_file;
 
+			// if the source square is the king's starting square && target square is a castled position
+			// AND the king can castle in that direction
+			// then we move both the king and rook to the appropriate squares
+			// e.g. king move from e1 to g1 means we move rook from h1 to f1 as well
+			if (move->source_rank == 0 && move->source_file == 4) {
+				
+				if (move->target_rank == 0 && move->target_file == 6) { // white kingside castles
+					struct square *h1_square = &board->squares[0][7];
+					struct square *f1_square = &board->squares[0][5];
 
-	} else {
-		struct square *source_square = &board->squares[move->source_rank][move->source_file];
-		struct square *target_square = &board->squares[move->target_rank][move->target_file];
+					modify_squares_for_castled_rook(h1_square, f1_square, move->piece_color);
 
-		source_square->has_piece = false;
-		
-		target_square->has_piece = true;
-		target_square->piece_color = move->piece_color;
+				} else if (move->target_rank == 0 && move->target_file == 2) { // white queenside castles
+					struct square *a1_square = &board->squares[0][0];
+					struct square *d1_square = &board->squares[0][3];
 
-		if (move->is_promotion) {
-			target_square->piece_type = move->piece_type_promoted_to;
-		} else {
-			target_square->piece_type = move->piece_type;
-		}
-
-		
-
-		if (move->piece_type == PIECE_TYPE_PAWN) {
-			if (int_difference(move->source_rank, move->target_rank) == 2) {
-				board->can_en_passant[move->target_file] = true;
+					modify_squares_for_castled_rook(a1_square, d1_square, move->piece_color);
+				}
 			}
+
+			// the moving side's king loses castling rights, regardless of the type of king move made here
+			board->white_can_castle_kingside = false;
+			board->white_can_castle_queenside = false;
+		} else {
+			board->black_king_rank = move->target_rank;
+			board->black_king_file = move->target_file;
+
+			// if king is moving from it's starting square of e8
+			if (move->source_rank == 7 && move->source_file == 4) {
+				if (move->target_rank == 7 && move->target_file == 6) { // white kingside castles
+					struct square *h8_square = &board->squares[7][7];
+					struct square *f8_square = &board->squares[7][5];
+
+					modify_squares_for_castled_rook(h8_square, f8_square, move->piece_color);
+
+				} else if (move->target_rank == 7 && move->target_file == 2) { // white queenside castles
+					struct square *a8_square = &board->squares[7][0];
+					struct square *d8_square = &board->squares[7][3];
+
+					modify_squares_for_castled_rook(a8_square, d8_square, move->piece_color);
+				}
+			}
+
+			// the moving side's king loses castling rights, regardless of the type of king move made here
+			board->black_can_castle_kingside = false;
+			board->black_can_castle_queenside = false;
+		}
+
+	} else if (move->piece_type == PIECE_TYPE_ROOK) {
+
+		// a rook move that originates from the rook's original square (i.e. a1, h1, a8, h8)
+		// causes the appropriate castling rights to be revoked
+		if (move->source_rank == 0) {
+			if (move->source_file == 0)
+				board->white_can_castle_queenside = false;
+			else if (move->source_file == 7)
+				board->white_can_castle_kingside = false;
+
+		} else if (move->source_rank == 7) {
+			if (move->source_file == 0)
+				board->black_can_castle_queenside = false;
+			else if (move->source_file == 7)
+				board->black_can_castle_kingside = false;
+		}
+	}
+
+	assert(move->source_rank >= 0);
+	assert(move->source_rank <= 7);
+	assert(move->source_file >= 0);
+	assert(move->source_file <= 7);
+	assert(move->target_rank >= 0);
+	assert(move->target_rank <= 7);
+	assert(move->target_file >= 0);
+	assert(move->target_file <= 7);
+
+	struct square *source_square = &board->squares[move->source_rank][move->source_file];
+	struct square *target_square = &board->squares[move->target_rank][move->target_file];
+
+	source_square->has_piece = false;
+	
+	target_square->has_piece = true;
+	target_square->piece_color = move->piece_color;
+
+	if (move->is_promotion) {
+		target_square->piece_type = move->piece_type_promoted_to;
+	} else {
+		target_square->piece_type = move->piece_type;
+	}
+
+	// all previous en passant possibilities are gone after a move is made, there can only be one possibility on the next move
+	// that's only if the current move is a pawn move 2 squares forward
+	memset(board->can_en_passant, 0, 8 * sizeof(board->can_en_passant[0])); 
+	if (move->piece_type == PIECE_TYPE_PAWN) {
+		if (int_difference(move->source_rank, move->target_rank) == 2) {
+			board->can_en_passant[move->target_file] = true;
 		}
 	}
 
@@ -396,16 +531,6 @@ void apply_move_to_board(struct board *board, const struct move *move) {
 			board->is_black_in_check = false; // it is not possible for the move to have been made by black and for black to be in check after the move
 		}
 	}
-
-	if (move->piece_type == PIECE_TYPE_KING) {
-		if (move->piece_color == PIECE_COLOR_WHITE) {
-			board->white_can_castle_kingside = false;
-			board->white_can_castle_kingside = false;
-		} else {
-			board->black_can_castle_kingside = false;
-			board->black_can_castle_kingside = false;
-		}
-	}
 }
 
 void undo_move_from_board(struct board *board, const struct move *move) {
@@ -418,142 +543,142 @@ void undo_move_from_board(struct board *board, const struct move *move) {
 	*board = saved_board_states[n_saved_board_states];
 }
 
-// returns whether the king located at [king_rank][king_file] is in check from the direction of rank_dir, file_dir
-bool is_king_in_check_in_direction(const struct board *board, int king_rank, int king_file, int rank_dir, int file_dir) {
-	piece_color king_color = board->squares[king_rank][king_file].piece_color;
-
+// returns whether the square [rank][file] is directly attacked by a piece of a provided color
+// from the provided direction
+// the rank_dir and file_dir should both be in [-1, 1], otherwise the result doesn't really make sense
+bool is_square_attacked_from_direction_by_color(const struct board *board, piece_color color, int rank, int file, int rank_dir, int file_dir) {
 	#define DIAGONAL_DIRECTION 0
 	#define STRAIGHT_DIRECTION 1
 
 	// are we looking along a diagonal or a file/rank?
 	int direction_we_are_checking;
-	if (rank_dir == 0 || file_dir == 0)
+	if (rank_dir == 0) {
+		assert(file_dir != 0); // we should not call this function with rank_dir AND file_dir == 0, it'll spin forever
 		direction_we_are_checking = STRAIGHT_DIRECTION;
-	else
+	} else if (file_dir == 0) {
+		assert(rank_dir != 0); // we should not call this function with rank_dir AND file_dir == 0, it'll spin forever
+		direction_we_are_checking = STRAIGHT_DIRECTION;
+	} else {
 		direction_we_are_checking = DIAGONAL_DIRECTION;
+	}
 
-	int rank = king_rank + rank_dir;
-	int file = king_file + file_dir;
-	while (1) {
-		if (rank < 0 || rank > 7 || file < 0 || file > 7) // we went out of bounds
-			return false;
-		
-		struct square the_square = board->squares[rank][file];
-		if (the_square.has_piece) {
-			if (the_square.piece_color == king_color) {
-				// we've hit a piece of the king's color in this direction, that piece is pinned, and we are not in check from this direction
+	// these are the coordinates of the square we are checking right now in the rank and file directions
+	int target_rank = rank + rank_dir;
+	int target_file = file + file_dir;
+
+	int steps_in_direction = 1;
+
+	// loop while we are within bounds of the board, if we exit bounds, then the square is not under attack from the direction
+	while (target_rank >= 0 && target_rank <= 7 && target_file >= 0 && target_file <= 7) {		
+		struct square target_square = board->squares[target_rank][target_file];
+
+		if (target_square.has_piece) {
+			if (target_square.piece_color != color) {
+				// we've hit a piece of the opposite color in this direction
+				// therefore the square is not attacked from this direction
 				return false;
+			
+			} else if (target_square.piece_type == PIECE_TYPE_KING) {
+				// if we've only made one step in the direction, and a king of the color is there, then the square is attacked
+				if (steps_in_direction == 1) {
+					return true;
+				}
 
-			} else if (the_square.piece_type == PIECE_TYPE_QUEEN) {
+			} else if (target_square.piece_type == PIECE_TYPE_PAWN) {
+				// if we've only made one step in the direction and checking diagonally
+				// and a pawn is on the next rank, then the pawn is attacking that square
+				if (steps_in_direction == 1 && direction_we_are_checking == DIAGONAL_DIRECTION) {
+					if (color == PIECE_COLOR_WHITE) {
+						if (rank_dir == -1)
+							return true;
+					} else {
+						if (rank_dir == 1)
+							return true;
+					}
+				}
+
+			} else if (target_square.piece_type == PIECE_TYPE_QUEEN) {
 				// the piece in this direction is a queen, which is checking the king regardless of whether our direction is diagonal or straight down a rank or file
 				return true;
 		
-			} else if (the_square.piece_type == PIECE_TYPE_ROOK) {
+			} else if (target_square.piece_type == PIECE_TYPE_ROOK) {
 				if (direction_we_are_checking == STRAIGHT_DIRECTION)
 					return true;
 				else
 					return false;
-			} else if (the_square.piece_type == PIECE_TYPE_BISHOP) {
+
+			} else if (target_square.piece_type == PIECE_TYPE_BISHOP) {
 				if (direction_we_are_checking == DIAGONAL_DIRECTION)
 					return true;
 				else
 					return false;
 			}
 		}
-		rank += rank_dir; file += file_dir;
+		target_rank += rank_dir; target_file += file_dir;
+		steps_in_direction++;
 	}
+
+	// we exited the loop without hitting a piece of any color, we are not in attack from this direction
+	return false;
 }
 
-// returns whether the king located at king_rank, king_file is in check on the provided board
-bool is_king_on_square_in_check(const struct board *board, int king_rank, int king_file) {
-	piece_color king_color = board->squares[king_rank][king_file].piece_color;
+// returns whether square [rank][file] is attacked by a piece of a provided color
+bool is_square_attacked_by_piece_of_color(const struct board *board, int rank, int file, piece_color color) {
+	assert(rank >= 0);
+	assert(rank <= 7);
+	assert(file >= 0);
+	assert(rank <= 7);
 
-	// strategy is to fan out from the king's position in all directions
-	// and check if we hit a piece that attacks the king's square
-
-	// pawn checks from the both of the king's sides
-	{
-		int pawn_rank, pawn_file;
-		// check the square 1 diagonal left of the king
-		if (king_color == PIECE_COLOR_WHITE) {
-			pawn_rank = king_rank + 1;
-			pawn_file = king_file - 1;
-		} else {
-			pawn_rank = king_rank - 1;
-			pawn_file = king_file + 1;
-		}
-
-		if (pawn_rank >= 0 && pawn_rank <= 7 && pawn_file >= 0 && pawn_file <= 7) {
-			struct square pawn_square = board->squares[pawn_rank][pawn_file];
-			if (pawn_square.has_piece && pawn_square.piece_color != king_color && pawn_square.piece_type == PIECE_TYPE_PAWN)
-				return true;
-		}
-
-		// check the square 1 diagonal right of the king
-		if (king_color == PIECE_COLOR_WHITE) {
-			pawn_rank = king_rank + 1;
-			pawn_file = king_file + 1;
-		} else {
-			pawn_rank = king_rank - 1;
-			pawn_file = king_file - 1;
-		}
-		if (pawn_rank >= 0 && pawn_rank <= 7 && pawn_file >= 0 && pawn_file <= 7) {
-			struct square pawn_square = board->squares[pawn_rank][pawn_file];
-			if (pawn_square.has_piece && pawn_square.piece_color != king_color && pawn_square.piece_type == PIECE_TYPE_PAWN)
-				return true;
-		}
-	}
-
-	// diagonal checks for bishop or queen checks
+	// diagonal checks for bishop or queen attack, also includes attacks by pawn & king, which can only apply after 1 step in the direction
 	{
 		// -1, -1 direction
-		if (is_king_in_check_in_direction(board, king_rank, king_file, -1, -1))
+		if (is_square_attacked_from_direction_by_color(board, color, rank, file, -1, -1))
 			return true;
 
 		// -1, 1
-		if (is_king_in_check_in_direction(board, king_rank, king_file, -1, 1))
+		if (is_square_attacked_from_direction_by_color(board, color, rank, file, -1, 1))
 			return true;
 
 		// 1, -1 direction
-		if (is_king_in_check_in_direction(board, king_rank, king_file, 1, -1))
+		if (is_square_attacked_from_direction_by_color(board, color, rank, file, 1, -1))
 			return true;
 
 		// 1, 1 direction
-		if (is_king_in_check_in_direction(board, king_rank, king_file, 1, 1))
+		if (is_square_attacked_from_direction_by_color(board, color, rank, file, 1, 1))
 			return true;
 	}
 
-	// checks along a rank or file by either a queen or rook
+	// attacks along a rank or file by either a queen or rook, also includes attacks by a king, which can only apply after 1 step in the direction
 	{
 		// 1, 0 direction
-		if (is_king_in_check_in_direction(board, king_rank, king_file, 1, 0))
+		if (is_square_attacked_from_direction_by_color(board, color, rank, file, 1, 0))
 			return true;
 
 		// -1, 0 direction
-		if (is_king_in_check_in_direction(board, king_rank, king_file, -1, 0))
+		if (is_square_attacked_from_direction_by_color(board, color, rank, file, -1, 0))
 			return true;
 
 		// 0, 1 direction
-		if (is_king_in_check_in_direction(board, king_rank, king_file, 0, 1))
+		if (is_square_attacked_from_direction_by_color(board, color, rank, file, 0, 1))
 			return true;
 
 		// 0, -1 direction
-		if (is_king_in_check_in_direction(board, king_rank, king_file, 0, -1))
+		if (is_square_attacked_from_direction_by_color(board, color, rank, file, 0, -1))
 			return true;
 	}
-	
-	// checks from a knight
+
+	// attacks by a knight
 	{
 		for (int i = 0; i < 8; i++) {
-			int rank = king_rank + knight_move_rank_offsets[i];
-			int file = king_file + knight_move_file_offsets[i];
+			int knight_rank = rank + knight_move_rank_offsets[i];
+			int knight_file = file + knight_move_file_offsets[i];
 	
-			if (rank < 0 || rank > 7 || file < 0 || file > 7)
+			if (knight_rank < 0 || knight_rank > 7 || knight_file < 0 || knight_file > 7)
 				continue;
 
-			struct square the_square = board->squares[rank][file];
+			struct square the_square = board->squares[knight_rank][knight_file];
 			
-			if (the_square.has_piece && the_square.piece_color != king_color && the_square.piece_type == PIECE_TYPE_KNIGHT)
+			if (the_square.has_piece && the_square.piece_color == color && the_square.piece_type == PIECE_TYPE_KNIGHT)
 				return true;
 		}
 	}
@@ -561,28 +686,23 @@ bool is_king_on_square_in_check(const struct board *board, int king_rank, int ki
 	return false;
 }
 
-// finds the position of the king of color king_color and puts the rank & file into *rank & *file
-void find_king_position(const struct board *board, piece_color king_color, int *rank, int *file) {
-	for (int r = 0; r < 8; r++) {
-		for (int f = 0; f < 8; f++) {
-			if (board->squares[r][f].has_piece && board->squares[r][f].piece_color == king_color && board->squares[r][f].piece_type == PIECE_TYPE_KING) {
-				*rank = r;
-				*file = f;
-				return;
-			} // rank loop
-		} // file loop
-	}
+// returns whether the king located at king_rank, king_file is in check on the provided board
+bool is_king_on_square_in_check(const struct board *board, int king_rank, int king_file) {
+	assert(board->squares[king_rank][king_file].has_piece);
+	assert(board->squares[king_rank][king_file].piece_type == PIECE_TYPE_KING);
+	
+	piece_color king_color = board->squares[king_rank][king_file].piece_color;
+	piece_color opposite_color = invert_piece_color(king_color);
 
-	fprintf(stderr, "unable to find king of color %d on the board, board state:\n%s\n", king_color, board_str(board));
-	exit(1);
+	// just check if the king's square is attacked by a piece of the opposite color
+	return is_square_attacked_by_piece_of_color(board, king_rank, king_file, opposite_color);
 }
-
 
 bool is_move_legal(struct board *board, struct move *move) {
 	apply_move_to_board(board, move);
 
 	int king_rank, king_file;
-	find_king_position(board, move->piece_color, &king_rank, &king_file);
+	get_king_position(board, move->piece_color, &king_rank, &king_file);
 
 	// a move is illegal if it puts the mover's side's king in check
 	bool is_illegal = is_king_on_square_in_check(board, king_rank, king_file);
@@ -632,17 +752,19 @@ int find_all_possible_pawn_moves(struct board *board, struct move **into, int ra
 	} else {
 		next_rank = rank - 1;
 	}
+	// a pawn cannot end up on the last rank without promotion, so the square in front of a pawn must not be out of bounds
 	assert(next_rank >= 0);
 	assert(next_rank <= 7);
 	
 	int n_moves = 0;
 
-	// since a move's origin square never changes, reuse this for populating move's fields
 	struct move next_move = {0};
 	next_move.source_rank = rank;
 	next_move.source_file = file;
 	next_move.piece_type = PIECE_TYPE_PAWN;
 	next_move.piece_color = pawn_color;
+
+	piece_type possible_promotions[4] = { PIECE_TYPE_QUEEN, PIECE_TYPE_ROOK, PIECE_TYPE_BISHOP, PIECE_TYPE_KNIGHT };
 
 	// move forward one square logic
 	{
@@ -651,11 +773,12 @@ int find_all_possible_pawn_moves(struct board *board, struct move **into, int ra
 			next_move.target_rank = next_rank;
 			next_move.target_file = file;
 			next_move.is_capture = false;
+			next_move.is_en_passant = false;
 
 			// promotion case for pawn
 			if (next_rank == 0 || next_rank == 7) {
 				next_move.is_promotion = true;
-				piece_type possible_promotions[4] = { PIECE_TYPE_QUEEN, PIECE_TYPE_ROOK, PIECE_TYPE_BISHOP, PIECE_TYPE_KNIGHT };
+
 				for (int i = 0; i < 4; i++) {
 					next_move.piece_type_promoted_to = possible_promotions[i];
 
@@ -686,10 +809,23 @@ int find_all_possible_pawn_moves(struct board *board, struct move **into, int ra
 				assert(target_square.piece_type != PIECE_TYPE_KING);
 
 				next_move.is_capture = true;
-				next_move.is_promotion = false;
 				next_move.target_rank = next_rank;
 				next_move.target_file = left_file;
 				next_move.captured_piece_type = target_square.piece_type;
+				next_move.is_en_passant = false;
+
+				if (next_rank == 0 || next_rank == 7) {
+					next_move.is_promotion = true;
+
+					for (int i = 0; i < 4; i++) {
+						next_move.piece_type_promoted_to = possible_promotions[i];
+						finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+					}
+
+				} else {
+					next_move.is_promotion = false;
+					finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+				}	
 
 				finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
 			}
@@ -710,21 +846,32 @@ int find_all_possible_pawn_moves(struct board *board, struct move **into, int ra
 			if (target_square.has_piece && target_square.piece_color != pawn_color) {
 				// we should never end up in situation where the target square has a king of the opposite color and the pawn can capture it
 				assert(target_square.piece_type != PIECE_TYPE_KING);
-	
+
 				next_move.is_capture = true;
-				next_move.is_promotion = false;
 				next_move.target_rank = next_rank;
 				next_move.target_file = right_file;
 				next_move.captured_piece_type = target_square.piece_type;
+				next_move.is_en_passant = false;
 
-				finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+				if (next_rank == 0 || next_rank == 7) {
+					next_move.is_promotion = true;
+
+					for (int i = 0; i < 4; i++) {
+						next_move.piece_type_promoted_to = possible_promotions[i];
+						finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+					}
+
+				} else {
+					next_move.is_promotion = false;
+					finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+				}	
 			}
 		}
 	}
 
 	// forward 2 squares logic
 	{
-		int target_rank = - 1;
+		int target_rank = -1;
 		if (pawn_color == PIECE_COLOR_WHITE && rank == 1) {
 			target_rank = rank + 2;
 		} else if (pawn_color == PIECE_COLOR_BLACK && rank == 6) {
@@ -736,6 +883,7 @@ int find_all_possible_pawn_moves(struct board *board, struct move **into, int ra
 			next_move.is_promotion = false;
 			next_move.target_rank = target_rank;
 			next_move.target_file = file;
+			next_move.is_en_passant = false;
 
 			finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
 		}
@@ -754,8 +902,8 @@ int find_all_possible_pawn_moves(struct board *board, struct move **into, int ra
 			
 			struct square target_square = board->squares[rank][left_file];
 
-			bool cond = target_square.has_piece && target_square.piece_color != pawn_color && target_square.piece_type == PIECE_TYPE_PAWN && board->can_en_passant[left_file];
-			if (cond) {
+			bool can_en_passant = target_square.has_piece && target_square.piece_color != pawn_color && target_square.piece_type == PIECE_TYPE_PAWN && board->can_en_passant[left_file];
+			if (can_en_passant) {
 				next_move.is_capture = true;
 				next_move.captured_piece_type = PIECE_TYPE_PAWN;
 				next_move.target_rank = next_rank;
@@ -780,8 +928,8 @@ int find_all_possible_pawn_moves(struct board *board, struct move **into, int ra
 			
 			struct square target_square = board->squares[rank][right_file];
 
-			bool cond = target_square.has_piece && target_square.piece_color != pawn_color && target_square.piece_type == PIECE_TYPE_PAWN && board->can_en_passant[right_file];
-			if (cond) {
+			bool can_en_passant = target_square.has_piece && target_square.piece_color != pawn_color && target_square.piece_type == PIECE_TYPE_PAWN && board->can_en_passant[right_file];
+			if (can_en_passant) {
 				next_move.is_capture = true;
 				next_move.captured_piece_type = PIECE_TYPE_PAWN;
 				next_move.target_rank = next_rank;
@@ -997,25 +1145,25 @@ int find_all_possible_queen_moves(struct board *board, struct move **into, int r
 
 // returns the number of possible moves a king located at [rank][file] on the board can make
 // places the possible moves into the *into param, if into is NULL, it just counts the number of moves without recording them
-int find_all_possible_king_moves(struct board *board, struct move **into, int rank, int file) {
-	assert(rank >= 0 && rank <= 7);
-	assert(file >= 0 && rank <= 7);
-	assert(board->squares[rank][file].has_piece);
-	assert(board->squares[rank][file].piece_type == PIECE_TYPE_KING);
+int find_all_possible_king_moves(struct board *board, struct move **into, int king_rank, int king_file) {
+	assert(king_rank >= 0 && king_rank <= 7);
+	assert(king_file >= 0 && king_file <= 7);
+	assert(board->squares[king_rank][king_file].has_piece);
+	assert(board->squares[king_rank][king_file].piece_type == PIECE_TYPE_KING);
 
-	piece_color king_color = board->squares[rank][file].piece_color;
+	piece_color king_color = board->squares[king_rank][king_file].piece_color;
 
 	struct move next_move = {0};
 	next_move.piece_type = PIECE_TYPE_KING;
 	next_move.piece_color = king_color;
-	next_move.source_rank = rank;
-	next_move.source_file = file;
+	next_move.source_rank = king_rank;
+	next_move.source_file = king_file;
 
 	int n_moves = 0;
 
 	for (int i = 0; i < 8; i++) {
-		int target_rank = rank + king_move_rank_offsets[i];
-		int target_file = file + king_move_file_offsets[i];
+		int target_rank = king_rank + king_move_rank_offsets[i];
+		int target_file = king_file + king_move_file_offsets[i];
 
 		if (target_rank < 0 || target_rank > 7 || target_file < 0 || target_file > 7)
 			continue;
@@ -1036,6 +1184,80 @@ int find_all_possible_king_moves(struct board *board, struct move **into, int ra
 		} else {
 			next_move.is_capture = false;
 			finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+		}
+	}
+
+	// castling moves
+	// TODO: factor out the logic, lots of duplication here
+	{
+		piece_color opposite_color = invert_piece_color(king_color);
+
+		next_move.is_capture = false;
+
+		// in all the below situations, we need to check the following:
+		// 1. that we have our castling rights in the appropriate direction
+		// 2. that we are not castling through check
+		// 3. that there are no pieces in the way between the king's initial position and the rook's initial position
+		if (king_color == PIECE_COLOR_WHITE) {
+			if (king_rank == 0 && king_file == 4) {
+				if (board->white_can_castle_kingside) {
+					// we can't castle if f1 is under attack, since that would be castling through check
+					bool is_f1_hit = is_square_attacked_by_piece_of_color(board, 0, 5, opposite_color);
+					if (!is_f1_hit) {
+						// check f1 & g1 for pieces
+						if (!board->squares[0][5].has_piece && !board->squares[0][6].has_piece) {
+							// we should be able to castle at this point
+							next_move.target_rank = 0;
+							next_move.target_file = 6;
+							finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+						}
+					}
+				}
+
+				if (board->white_can_castle_queenside) {
+					// we can't castle if d1 is under attack, since that would be castling through check
+					bool is_d1_hit = is_square_attacked_by_piece_of_color(board, 0, 3, opposite_color);
+					if (!is_d1_hit) {
+						// check b1, c1, d1 for pieces
+						if (!board->squares[0][1].has_piece && !board->squares[0][2].has_piece && !board->squares[0][3].has_piece) {
+							// we should be able to castle at this point
+							next_move.target_rank = 0;
+							next_move.target_file = 2;
+							finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+						}
+					}
+				}
+			}
+		} else {
+			if (king_rank == 7 && king_file == 4) {
+				if (board->black_can_castle_kingside) {
+					// we can't castle if f8 is under attack, since that would be castling through check
+					bool is_f1_hit = is_square_attacked_by_piece_of_color(board, 7, 5, opposite_color);
+					if (!is_f1_hit) {
+						// check f8 & g8 for pieces
+						if (!board->squares[7][5].has_piece && !board->squares[7][6].has_piece) {
+							// we should be able to castle at this point
+							next_move.target_rank = 7;
+							next_move.target_file = 6;
+							finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+						}
+					}
+				}
+
+				if (board->black_can_castle_queenside) {
+					// we can't castle if d8 is under attack, since that would be castling through check
+					bool is_d1_hit = is_square_attacked_by_piece_of_color(board, 7, 3, opposite_color);
+					if (!is_d1_hit) {
+						// check b8, c8, d8 for pieces
+						if (!board->squares[7][1].has_piece && !board->squares[7][2].has_piece && !board->squares[7][3].has_piece) {
+							// we should be able to castle at this point
+							next_move.target_rank = 7;
+							next_move.target_file = 2;
+							finalize_move_info_and_record_if_legal(board, &next_move, into, &n_moves);
+						}
+					}
+				}
+			}
 		}
 	}
 	
@@ -1111,7 +1333,7 @@ int is_move_check_or_mate(struct board *board, struct move *move) {
 	piece_color opposite_color = invert_piece_color(move->piece_color);
 
 	int king_rank, king_file;
-	find_king_position(board, opposite_color, &king_rank, &king_file);
+	get_king_position(board, opposite_color, &king_rank, &king_file);
 
 	bool is_check = is_king_on_square_in_check(board, king_rank, king_file);
 
@@ -1140,8 +1362,10 @@ int main(void) {
 	char *most_possible_moves_for_white = "R6R/3Q4/1Q4Q1/4Q3/2Q4Q/Q4Q2/pp1Q4/kBNN1KB1 w - -";
 	char *en_passant_to_the_left_possible = "rnbqkbnr/ppp1ppp1/7p/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3";
 	char *en_passant_to_the_right_possible = "rnbqkbnr/ppppp1p1/7p/4Pp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3";
+	char *white_can_castle_kingside_and_queenside = "rnbqkbnr/ppp2ppp/3pp3/8/2BPP1Q1/2N1BN2/PPP2PPP/R3K2R b KQ - 6 7";
+	char *white_has_32_promotion_moves = "8/PPPPPPPP/8/8/8/7k/K7/8 w - - 0 1";
 	
-	load_fen_to_board(most_possible_moves_for_white, &board);
+	load_fen_to_board(white_has_32_promotion_moves, &board);
 
 	struct move moves[256];
 	printf("%s\n\n", board_str(&board));
