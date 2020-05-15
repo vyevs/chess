@@ -6,83 +6,14 @@
 #include <string.h>
 #include <stdbool.h>
 
+#include "board.h"
 
-
-typedef enum { PIECE_TYPE_PAWN, PIECE_TYPE_KNIGHT, PIECE_TYPE_BISHOP, PIECE_TYPE_ROOK, PIECE_TYPE_QUEEN, PIECE_TYPE_KING } piece_type;
-typedef enum { PIECE_COLOR_WHITE, PIECE_COLOR_BLACK } piece_color;
 
 piece_color invert_piece_color(piece_color color) {
 	if (color == PIECE_COLOR_WHITE)
 		return PIECE_COLOR_BLACK;
 	return PIECE_COLOR_WHITE;
 }
-
-struct square {
-	bool has_piece;
-	piece_color piece_color;
-	piece_type piece_type;
-};
-
-#define GAME_ONGOING 0
-#define WHITE_WON 1
-#define BLACK_WON 2
-
-struct board {
-	// [rank][file]
-	struct square squares[8][8];
-
-	int white_king_rank;
-	int white_king_file;
-	int black_king_rank;
-	int black_king_file;
-
-	bool is_white_in_check;
-	bool is_black_in_check;
-
-	bool white_can_castle_kingside;
-	bool black_can_castle_kingside;
-	bool white_can_castle_queenside;
-	bool black_can_castle_queenside;
-
-	int result;
-
-	bool can_en_passant[8]; // per file, regardless of color
-
-	int n_moves_made; // number of white moves + number of black moves
-	struct move *move_history;
-};
-
-struct move {
-	piece_type piece_type;
-	piece_color piece_color;
-	int source_rank, source_file;
-	int target_rank, target_file;
-	bool is_capture;
-	piece_type captured_piece_type;    // only applies if is_capture == true
-	bool is_check;
-	bool is_mate; 
-
-	// following fields only apply if piece_type == PIECE_TYPE_PAWN
-	bool is_promotion;		   		   
-	bool is_en_passant; 
-	piece_type piece_type_promoted_to;
-};
-
-// there up to 8 knight moves for a single knight
-// each pair of values here are a potential knight move
-static int knight_move_rank_offsets[8] = { 2, 1, -1, -2, -2, -1,  1,  2 };
-static int knight_move_file_offsets[8] = { 1, 2,  2,  1, -1, -2, -2, -1 };
-
-
-// a king can move in 8 directions, rank_offsets[i] and file_offsets[i] are one directional pair
-static int king_move_rank_offsets[8] = { -1, -1, -1,  0,  1, 1, 1, 0 };
-static int king_move_file_offsets[8] = {  1,  0, -1, -1, -1, 0, 1, 1 };
-
-
-#define MOVE_IS_NOT_CHECK_OR_MATE 0
-#define MOVE_IS_CHECK 1
-#define MOVE_IS_MATE 2
-int is_move_check_or_mate(struct board *board, struct move *move);
 
 
 char *write_move_target_in_algebraic_notation_to_buf(struct move *move, char *to_write_to) {
@@ -243,7 +174,7 @@ char *board_str(const struct board *board) {
 			case PIECE_TYPE_KING: piece_ch = 'K'; break;
 
 			default:
-				fprintf(stderr, "board_str: unknown piece type %"PRIx8" at [%d, %d]\n", piece_type, rank, file);
+				fprintf(stderr, "board_str: unknown piece type %d at [%d, %d]\n", piece_type, rank, file);
 				exit(1);
 			}
 			
@@ -281,7 +212,13 @@ void load_fen_to_board(const char *fen, struct board *into) {
 
 			if (ch >= '1' && ch <= '8') {
 				int n_empty_squares = ch - '0';
-				file += n_empty_squares;
+				
+				for (int empty_sq = 0; empty_sq < n_empty_squares; empty_sq++) {
+					into->squares[rank][file].has_piece = false;
+					
+					file++;
+				}
+				
 			} else {
 					
 				struct square *current_square = &into->squares[rank][file];
@@ -1232,8 +1169,8 @@ int find_all_possible_king_moves(struct board *board, struct move **into, int ki
 			if (king_rank == 7 && king_file == 4) {
 				if (board->black_can_castle_kingside) {
 					// we can't castle if f8 is under attack, since that would be castling through check
-					bool is_f1_hit = is_square_attacked_by_piece_of_color(board, 7, 5, opposite_color);
-					if (!is_f1_hit) {
+					bool is_f8_hit = is_square_attacked_by_piece_of_color(board, 7, 5, opposite_color);
+					if (!is_f8_hit) {
 						// check f8 & g8 for pieces
 						if (!board->squares[7][5].has_piece && !board->squares[7][6].has_piece) {
 							// we should be able to castle at this point
@@ -1246,8 +1183,8 @@ int find_all_possible_king_moves(struct board *board, struct move **into, int ki
 
 				if (board->black_can_castle_queenside) {
 					// we can't castle if d8 is under attack, since that would be castling through check
-					bool is_d1_hit = is_square_attacked_by_piece_of_color(board, 7, 3, opposite_color);
-					if (!is_d1_hit) {
+					bool is_d8_hit = is_square_attacked_by_piece_of_color(board, 7, 3, opposite_color);
+					if (!is_d8_hit) {
 						// check b8, c8, d8 for pieces
 						if (!board->squares[7][1].has_piece && !board->squares[7][2].has_piece && !board->squares[7][3].has_piece) {
 							// we should be able to castle at this point
@@ -1350,6 +1287,7 @@ int is_move_check_or_mate(struct board *board, struct move *move) {
 	return MOVE_IS_NOT_CHECK_OR_MATE;
 }
 
+/*
 int main(void) {
 	struct board board;
 	memset(&board, 0, sizeof(board));
@@ -1386,4 +1324,4 @@ int main(void) {
 		}
 	}
 	printf("there are %d mates\n", n_mates);
-}
+}*/
