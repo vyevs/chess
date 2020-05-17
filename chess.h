@@ -1,22 +1,18 @@
 #pragma once
 
+#include <stdbool.h>
 
 typedef enum { PIECE_TYPE_PAWN, PIECE_TYPE_KNIGHT, PIECE_TYPE_BISHOP, PIECE_TYPE_ROOK, PIECE_TYPE_QUEEN, PIECE_TYPE_KING } piece_type;
-typedef enum { PIECE_COLOR_WHITE, PIECE_COLOR_BLACK } piece_color;
 
 struct square {
 	bool has_piece;
-	piece_color piece_color;
+	bool is_piece_white; // if has_piece, whether the piece color on this square is white
 	piece_type piece_type;
 };
 
-#define GAME_ONGOING 0
-#define WHITE_WON 1
-#define BLACK_WON 2
-
 struct move {
 	piece_type piece_type;
-	piece_color piece_color;
+	bool is_piece_white;
 	int source_rank, source_file;
 	int target_rank, target_file;
 	bool is_capture;
@@ -26,7 +22,7 @@ struct move {
 
 	// following fields only apply if piece_type == PIECE_TYPE_PAWN
 	bool is_promotion;		   		   
-	bool is_en_passant; 
+	bool is_en_passant;
 	piece_type piece_type_promoted_to;
 };
 
@@ -48,18 +44,23 @@ struct position {
 	bool can_en_passant[8]; // per file, regardless of color
 };
 
+#define GAME_ONGOING 0
+#define WHITE_WON 1
+#define BLACK_WON 2
+
 struct game_state {
 	struct position positions[256];
 	int n_positions;
+	
 	struct position *current_position;
 	
+	bool white_to_move;
+	
 	int result;
-	bool is_mate;
 	
 	struct move moves[256];
+	int n_moves;
 };
-
-char *position_str(const struct position *position);
 
 // there up to 8 knight moves for a single knight
 // each pair of values here are a potential knight move
@@ -77,9 +78,8 @@ static int king_move_file_offsets[8] = {  1,  0, -1, -1, -1, 0, 1, 1 };
 #define MOVE_IS_MATE 2
 int is_move_check_or_mate(struct position *position, struct move *move);
 
-
-
-void load_fen_to_position(const char *fen, struct position *into);
-
-
 int find_all_possible_moves_for_piece(struct position *position, struct move *into, int rank, int file);
+
+int find_all_possible_moves_for_color(struct position *position, struct move *into, bool color_is_white);
+
+void apply_move_to_game_state(struct game_state *game_state, const struct move *the_move);
